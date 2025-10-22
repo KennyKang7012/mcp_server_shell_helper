@@ -1,10 +1,10 @@
 {
     "mcpServers": {
         "shell_helper": {
-            "command": "uv",
+            "command": "C:/Users/01019/.local/bin/uv",
             "args": [
                 "--directory",
-                "/Users/kennykang/Desktop/VibeProj/shell_helper",
+                "C:/Users/01019/Desktop/code-space/mcp_server_shell_helper",
                 "run",
                 "server_shell_helper.py"
             ]
