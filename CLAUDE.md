@@ -4,144 +4,164 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Shell Helper is a cross-platform shell command execution tool built on the Model Context Protocol (MCP). It automatically detects the operating system and executes PowerShell commands on Windows or shell commands on Linux/macOS, returning results in real-time.
+Shell Helper is a cross-platform shell command execution tool that supports **three distinct interfaces**:
 
-The project now supports **two transport mechanisms**:
-1. **Stdio Transport** (Original) - Local process communication via stdin/stdout
-2. **SSE Transport** (New) - HTTP-based communication with Server-Sent Events
+1. **MCP Stdio Transport** - Model Context Protocol over stdin/stdout for local CLI integration
+2. **MCP SSE Transport** - Model Context Protocol over HTTP/SSE for networked deployments
+3. **FastAPI REST API** - Traditional HTTP REST endpoints for direct shell command execution
 
-### Components
-
-**Stdio Transport (Local):**
-- Server: [server_shell_helper.py](server_shell_helper.py) - Uses FastMCP framework
-- Client: [client_with_servers.py](client_with_servers.py) - Launches servers as subprocesses
-- Config: [mcp_servers.json](mcp_servers.json)
-
-**SSE Transport (Network):**
-- Server: [server_shell_helper_sse.py](server_shell_helper_sse.py) - FastAPI-based HTTP server
-- Client: [client_with_servers_sse.py](client_with_servers_sse.py) - HTTP/SSE client
-- Config: [mcp_servers_sse.json](mcp_servers_sse.json)
+All interfaces provide cross-platform shell execution by auto-detecting the OS and using PowerShell on Windows or standard shell on Linux/macOS.
 
 ## Development Commands
 
-### Environment Setup
+### Installation
 ```bash
-# Install dependencies
-uv pip install fastapi uvicorn sse-starlette httpx mcp openai python-dotenv
+# Install all dependencies
+uv pip install fastapi uvicorn sse-starlette httpx mcp openai python-dotenv pytest pytest-asyncio pytest-cov pydantic
 ```
 
-### Running the Application
+### Running Services
 
-**Stdio Transport (Local):**
+**MCP Stdio (Local):**
 ```bash
-# Start server (managed by client)
 python client_with_servers.py
 ```
 
-**SSE Transport (Network):**
+**MCP SSE (Network):**
 ```bash
-# Terminal 1: Start HTTP server
-uv run python server_shell_helper_sse.py
-# Or with uvicorn directly:
-uvicorn server_shell_helper_sse:app --host 0.0.0.0 --port 8000
+# Terminal 1: Start SSE server
+python server_shell_helper_sse.py
+# Or: uvicorn server_shell_helper_sse:app --host 0.0.0.0 --port 8000
 
 # Terminal 2: Start client
-uv run python client_with_servers_sse.py
+python client_with_servers_sse.py
 ```
 
-**Testing SSE Server:**
+**FastAPI REST:**
 ```bash
-# Health check
-curl http://localhost:8000/health
+# Using run script
+python run.py
 
-# Test tools list
-curl -X POST http://localhost:8000/sse/messages \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
-
-# Test get_platform
-curl -X POST http://localhost:8000/sse/messages \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "get_platform", "arguments": {}}}'
+# Or directly with uvicorn
+uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Environment Variables
-Copy `.env.example` to `.env` and configure:
-- `OPENAI_API_KEY` - Required for the client to use OpenAI's API
+### Testing
+
+```bash
+# Run all tests
+uv run pytest tests/ -v
+
+# Run specific test files
+uv run pytest tests/test_api.py -v
+uv run pytest tests/test_shell_agent.py -v
+
+# Run with coverage
+uv run pytest tests/ --cov=api -v
+
+# Test SSE server endpoints
+curl http://localhost:8000/health
+```
+
+### Monitoring
+```bash
+# Basic monitoring
+python test_quick_endpoint.py
+
+# Custom parameters
+python test_quick_endpoint.py -i 60 -d 120 --host localhost --port 8000
+```
+
+### Environment Configuration
+Create `.env` file with:
+```
+OPENAI_API_KEY=your_api_key_here
+```
 
 ## Architecture
 
-### Core Tools
-Both transport mechanisms expose the same two tools:
-- `get_platform()` - Returns the current OS platform (Windows, *nix, or Unknown)
-- `shell_helper(platform, shell_command)` - Executes shell commands based on platform
-  - Uses `subprocess.Popen` with real-time stdout/stderr capture
-  - Windows: Executes via PowerShell
-  - *nix: Executes directly in shell
+### Three-Interface Design
 
-### Stdio Transport Architecture
+The project is organized into three independent interfaces that share common shell execution logic:
 
-**Server** ([server_shell_helper.py](server_shell_helper.py)):
+**1. MCP Stdio Transport** (`server_shell_helper.py`, `client_with_servers.py`)
 - Uses FastMCP framework
-- Runs as subprocess launched by client
-- Communicates via stdin/stdout with newline-delimited JSON-RPC messages
-- Launched with `mcp.run(transport='stdio')`
+- Communication: stdin/stdout with JSON-RPC 2.0
+- Deployment: Client launches server as subprocess
+- Config: `mcp_servers.json` with `command`/`args`
 
-**Client** ([client_with_servers.py](client_with_servers.py)):
-- `MCPClient` class manages stdio connections
-- Uses `StdioServerParameters` and `stdio_client` from MCP SDK
-- Launches servers as child processes via configuration
+**2. MCP SSE Transport** (`server_shell_helper_sse.py`, `client_with_servers_sse.py`)
+- Uses FastAPI + sse-starlette
+- Communication: HTTP POST + Server-Sent Events
+- Deployment: Standalone HTTP service on port 8000
+- Config: `mcp_servers_sse.json` with `url`/`transport`
+- Endpoints: `GET /sse`, `POST /sse/messages`, `GET /health`
 
-### SSE Transport Architecture
+**3. FastAPI REST API** (`api/main.py`, `api/agent.py`, `api/models.py`)
+- Pure REST API without MCP protocol
+- Endpoints:
+  - `GET /platform` - Get OS platform info
+  - `POST /execute` - Execute command with explicit platform
+  - `POST /quick` - Auto-detect platform and execute
+- Models defined in Pydantic (`ShellCommand`, `ShellResponse`, `PlatformResponse`)
 
-**Server** ([server_shell_helper_sse.py](server_shell_helper_sse.py)):
-- FastAPI application with two endpoints:
-  - `GET /sse` - SSE streaming endpoint (server-to-client)
-  - `POST /sse/messages` - Message endpoint (client-to-server)
-  - `GET /health` - Health check endpoint
-- Implements JSON-RPC 2.0 protocol manually
-- Supports multiple concurrent clients
-- Sends heartbeat pings every 5 seconds to maintain connections
-- Returns message URL in initial SSE event
+### Core Execution Logic
 
-**Client** ([client_with_servers_sse.py](client_with_servers_sse.py)):
-- `SSEMCPClient` class manages HTTP/SSE connections
-- Uses `httpx.AsyncClient` for HTTP communication
-- Connects to SSE endpoint to receive message URL
-- Sends JSON-RPC requests via HTTP POST
-- Implements tool discovery and invocation via HTTP
+All three interfaces use the same shell execution pattern:
 
-**Client Flow:**
-1. Load server configs from configuration file
-2. Connect to SSE endpoint and extract message URL
-3. Send initialization request via HTTP POST
-4. Fetch available tools via HTTP POST
-5. Enter chat loop with OpenAI integration
-6. Route tool calls to appropriate servers
-7. Return results to LLM for response generation
+```python
+# Windows: PowerShell with args array
+args = ['powershell', '-Command', shell_command]
+
+# *nix: Direct shell execution
+args = shell_command
+
+# Real-time execution
+process = subprocess.Popen(args, shell=True, stdout=PIPE, stderr=PIPE, text=True)
+# Stream output line-by-line for real-time results
+```
+
+Location of execution logic:
+- MCP Stdio: `server_shell_helper.py:shell_helper()` (lines 23-75)
+- MCP SSE: `server_shell_helper_sse.py:shell_helper_impl()` (lines 58-99)
+- FastAPI REST: `api/agent.py:ShellAgent.execute_command()` (lines 15-49)
+
+### MCP Client Integration
+
+Both MCP clients integrate with OpenAI's API to provide LLM-powered shell command generation:
+
+**Flow:**
+1. Load server configs from JSON
+2. Connect to MCP server(s) and discover tools
+3. Enter chat loop accepting user natural language input
+4. LLM generates function calls to discovered MCP tools
+5. Client executes tool calls via MCP protocol
+6. Results returned to LLM for final response
+
+**Key difference:** Stdio uses `stdio_client()` context manager, SSE uses `httpx.AsyncClient` with manual SSE parsing.
 
 ### Configuration Files
-- [mcp_servers.json](mcp_servers.json) - Stdio transport (command/args format)
-- [mcp_servers_sse.json](mcp_servers_sse.json) - SSE transport (url/transport format)
 
-### Key Differences
+- `mcp_servers.json` - Stdio servers with `command` and `args`
+- `mcp_servers_sse.json` - SSE servers with `url` and `transport: "sse"`
+- Both follow MCP server configuration format
 
-| Aspect | Stdio | SSE |
-|--------|-------|-----|
-| Communication | Process stdin/stdout | HTTP + SSE |
-| Deployment | Subprocess per client | Standalone HTTP service |
-| Multi-client | No (1:1 process) | Yes (shared server) |
-| Network | Local only | Local or remote |
-| Dependencies | FastMCP | FastAPI, uvicorn, sse-starlette |
-| Use Case | Development, CLI tools | Production, remote access |
+### Transport Comparison
 
-See [SSE_MIGRATION.md](SSE_MIGRATION.md) for detailed migration guide and testing instructions.
+| Aspect | Stdio | SSE | REST API |
+|--------|-------|-----|----------|
+| Protocol | MCP/JSON-RPC | MCP/JSON-RPC | HTTP REST |
+| Communication | stdin/stdout | HTTP + SSE | HTTP only |
+| Deployment | Subprocess | HTTP service | HTTP service |
+| Multi-client | No | Yes | Yes |
+| Network | Local only | Network capable | Network capable |
+| LLM Integration | Built-in | Built-in | External |
 
-## Language and Documentation
+## Language Convention
 
-The codebase uses Traditional Chinese (繁體中文) for:
+The codebase uses **Traditional Chinese (繁體中文)** for:
 - Code comments and docstrings
-- User-facing messages and output
+- User-facing messages and log output
 - README and documentation
 
-When modifying code, maintain consistency with existing Traditional Chinese text.
+Maintain this language consistency when modifying code.
