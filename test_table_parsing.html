@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>測試表格解析</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #f5f5f5; }
+        .test-section { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; }
+        h2 { color: #667eea; }
+        pre { background: #1f2937; color: #f3f4f6; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background: #667eea; color: white; }
+        .success { color: green; font-weight: bold; }
+        .error { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>表格解析測試</h1>
+
+    <div class="test-section">
+        <h2>測試輸入：</h2>
+        <pre id="input"></pre>
+    </div>
+
+    <div class="test-section">
+        <h2>解析結果：</h2>
+        <div id="output"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>驗證：</h2>
+        <div id="validation"></div>
+    </div>
+
+    <script>
+        const testData = `ProcessName               PID Memory(GB) CPU(s)
+-----------               --- ---------- ------
+Memory Compression       3612       0.56 N/A
+Code                    21508       0.55 75.69
+chrome                  22816       0.42 96.77
+MsMpEng                  5088        0.4 N/A
+explorer                 9936       0.35 225.27`;
+
+        document.getElementById('input').textContent = testData;
+
+        // 從 dashboard.html 複製的解析函數
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function parseTable(lines, startIndex) {
+            const headerLine = lines[startIndex];
+            const separatorLine = lines[startIndex + 1];
+
+            // 通過分隔線確定列的位置
+            const columnPositions = [];
+            let inDash = false;
+            let startPos = 0;
+
+            for (let i = 0; i < separatorLine.length; i++) {
+                if (separatorLine[i] === '-' && !inDash) {
+                    inDash = true;
+                    startPos = i;
+                } else if (separatorLine[i] !== '-' && inDash) {
+                    inDash = false;
+                    columnPositions.push({ start: startPos, end: i });
+                }
+            }
+
+            // 如果最後還在 dash 中
+            if (inDash) {
+                columnPositions.push({ start: startPos, end: separatorLine.length });
+            }
+
+            // 從表頭中提取列名
+            const headers = columnPositions.map(pos =>
+                headerLine.substring(pos.start, pos.end).trim()
+            );
+
+            let tableHtml = '<table class="output-table"><thead><tr>';
+            headers.forEach(header => {
+                tableHtml += `<th>${escapeHtml(header)}</th>`;
+            });
+            tableHtml += '</tr></thead><tbody>';
+
+            // 解析數據行
+            let i = startIndex + 2; // 跳過表頭和分隔線
+            const parsedData = [];
+            while (i < lines.length) {
+                const dataLine = lines[i];
+
+                // 檢查是否為空行或表格結束
+                if (!dataLine.trim()) {
+                    break;
+                }
+
+                // 檢查是否還是表格內容（如果行太短或格式不對，表格結束）
+                if (dataLine.length < separatorLine.length * 0.5) {
+                    break;
+                }
+
+                // 提取單元格數據 - 使用更靈活的方法
+                const cells = columnPositions.map((pos, idx) => {
+                    // 對於每一列，從分隔線起始位置向前最多 10 個字符開始搜索
+                    const searchStart = Math.max(0, pos.start - 10);
+                    const nextColStart = idx < columnPositions.length - 1 ?
+                        columnPositions[idx + 1].start : dataLine.length;
+
+                    // 提取這個範圍內的文本
+                    const rawText = dataLine.substring(searchStart, nextColStart);
+
+                    // 分割成單詞（按空格）
+                    const words = rawText.trim().split(/\s+/).filter(w => w);
+
+                    // 對於第一列，可能包含多個單詞（如 "Memory Compression"）
+                    if (idx === 0) {
+                        // 找到最後一個看起來像數字的單詞的位置
+                        let lastWordIdx = words.length;
+                        for (let j = words.length - 1; j >= 0; j--) {
+                            if (/^\d+$/.test(words[j]) || /^\d+\.\d+$/.test(words[j])) {
+                                lastWordIdx = j;
+                                break;
+                            }
+                        }
+                        return words.slice(0, lastWordIdx).join(' ');
+                    }
+
+                    // 對於其他列，取最後一個單詞（最靠近該列位置的值）
+                    return words.length > 0 ? words[words.length - 1] : '';
+                });
+
+                parsedData.push(cells);
+
+                // 如果所有單元格都為空，表格結束
+                if (cells.every(cell => !cell)) {
+                    break;
+                }
+
+                tableHtml += '<tr>';
+                cells.forEach(cell => {
+                    tableHtml += `<td>${escapeHtml(cell || '-')}</td>`;
+                });
+                tableHtml += '</tr>';
+
+                i++;
+            }
+
+            tableHtml += '</tbody></table>';
+
+            return {
+                html: tableHtml,
+                nextIndex: i,
+                data: parsedData
+            };
+        }
+
+        // 執行測試
+        const lines = testData.split('\n');
+        const result = parseTable(lines, 0);
+
+        document.getElementById('output').innerHTML = result.html;
+
+        // 驗證結果 - 檢查所有4列
+        const expectedData = [
+            ['Memory Compression', '3612', '0.56', 'N/A'],
+            ['Code', '21508', '0.55', '75.69'],
+            ['chrome', '22816', '0.42', '96.77'],
+            ['MsMpEng', '5088', '0.4', 'N/A'],
+            ['explorer', '9936', '0.35', '225.27']
+        ];
+
+        let validationHtml = '<table><tr><th>行</th><th>ProcessName</th><th>PID</th><th>Memory(GB)</th><th>CPU(s)</th><th>狀態</th></tr>';
+
+        let allCorrect = true;
+        result.data.forEach((row, idx) => {
+            const expected = expectedData[idx];
+            const rowCorrect = row[0] === expected[0] && row[1] === expected[1] &&
+                             row[2] === expected[2] && row[3] === expected[3];
+            if (!rowCorrect) allCorrect = false;
+
+            validationHtml += `<tr>
+                <td>${idx + 1}</td>
+                <td class="${row[0] === expected[0] ? 'success' : 'error'}"><strong>${row[0]}</strong><br>期望: ${expected[0]}</td>
+                <td class="${row[1] === expected[1] ? 'success' : 'error'}"><strong>${row[1]}</strong><br>期望: ${expected[1]}</td>
+                <td class="${row[2] === expected[2] ? 'success' : 'error'}"><strong>${row[2]}</strong><br>期望: ${expected[2]}</td>
+                <td class="${row[3] === expected[3] ? 'success' : 'error'}"><strong>${row[3]}</strong><br>期望: ${expected[3]}</td>
+                <td class="${rowCorrect ? 'success' : 'error'}">${rowCorrect ? '✅' : '❌'}</td>
+            </tr>`;
+        });
+        validationHtml += '</table>';
+
+        document.getElementById('validation').innerHTML = validationHtml;
+
+        // 顯示摘要
+        const summary = document.createElement('div');
+        summary.style.marginTop = '20px';
+        summary.style.padding = '15px';
+        summary.style.borderRadius = '5px';
+        summary.style.fontWeight = 'bold';
+        summary.style.fontSize = '1.2em';
+        if (allCorrect) {
+            summary.style.background = '#d4edda';
+            summary.style.color = '#155724';
+            summary.textContent = '✅ 所有列都正確解析！修復成功！';
+        } else {
+            summary.style.background = '#f8d7da';
+            summary.style.color = '#721c24';
+            summary.textContent = '❌ 部分數據解析錯誤';
+        }
+        document.getElementById('validation').appendChild(summary);
+    </script>
+</body>
+</html>

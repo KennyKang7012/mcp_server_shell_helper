@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shell Helper 監控儀表板</title>
+    <link rel="stylesheet" href="/static/dashboard.css">
+    <!-- 引入 marked.js 用於 Markdown 渲染 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🖥️ Shell Helper 監控儀表板</h1>
+            <div class="update-time">
+                <span id="last-update">載入中...</span>
+                <span class="loading-indicator" id="loading-indicator" style="display: none;"></span>
+            </div>
+        </header>
+
+        <div class="content">
+            <!-- 摘要統計卡片 -->
+            <div class="summary-cards" id="summary-cards">
+                <div class="card">
+                    <div class="card-icon">📊</div>
+                    <div class="card-label">總測試數</div>
+                    <div class="card-value" id="total-tests">-</div>
+                </div>
+                <div class="card success">
+                    <div class="card-icon">✅</div>
+                    <div class="card-label">成功</div>
+                    <div class="card-value" id="success-tests">-</div>
+                </div>
+                <div class="card failure">
+                    <div class="card-icon">❌</div>
+                    <div class="card-label">失敗</div>
+                    <div class="card-value" id="failure-tests">-</div>
+                </div>
+                <div class="card rate">
+                    <div class="card-icon">📈</div>
+                    <div class="card-label">成功率</div>
+                    <div class="card-value" id="success-rate">-</div>
+                </div>
+            </div>
+
+            <!-- 控制按鈕區域 -->
+            <div class="controls">
+                <button class="btn btn-primary" onclick="toggleAllTests()">
+                    <span id="toggle-text">📖 展開全部</span>
+                </button>
+                <button class="btn btn-secondary" onclick="filterTests('all')" id="filter-all">
+                    全部
+                </button>
+                <button class="btn btn-success" onclick="filterTests('success')" id="filter-success">
+                    ✅ 成功
+                </button>
+                <button class="btn btn-danger" onclick="filterTests('failure')" id="filter-failure">
+                    ❌ 失敗
+                </button>
+
+                <!-- 刷新間隔設置 -->
+                <div class="refresh-settings">
+                    <label for="refresh-interval">⏱️ 刷新間隔：</label>
+                    <select id="refresh-interval" class="interval-select" onchange="updateRefreshInterval()">
+                        <option value="3000">3 秒</option>
+                        <option value="5000" selected>5 秒</option>
+                        <option value="10000">10 秒</option>
+                        <option value="30000">30 秒</option>
+                        <option value="60000">1 分鐘</option>
+                        <option value="custom">自訂...</option>
+                    </select>
+                    <input type="number" id="custom-interval" class="custom-input" placeholder="秒" min="1" max="3600" style="display: none;">
+                    <button id="apply-custom" class="btn-small" onclick="applyCustomInterval()" style="display: none;">套用</button>
+                </div>
+            </div>
+
+            <!-- 錯誤訊息區域 -->
+            <div id="error-container"></div>
+
+            <!-- 測試結果時間線 -->
+            <div class="results-section">
+                <h2 class="section-title">📋 測試結果時間線</h2>
+                <div id="test-timeline">
+                    <div class="loading-message">正在載入測試結果...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let refreshInterval;
+        let allExpanded = false;
+        let currentFilter = 'all';
+        let testResults = [];
+        let REFRESH_INTERVAL = 5000; // 預設 5 秒
+
+        // 從 localStorage 載入設置
+        function loadSettings() {
+            const savedInterval = localStorage.getItem('refreshInterval');
+            if (savedInterval) {
+                REFRESH_INTERVAL = parseInt(savedInterval);
+                const select = document.getElementById('refresh-interval');
+
+                // 查找匹配的選項
+                let found = false;
+                for (let option of select.options) {
+                    if (option.value === savedInterval) {
+                        select.value = savedInterval;
+                        found = true;
+                        break;
+                    }
+                }
+
+                // 如果沒有匹配的選項，設為自訂
+                if (!found && savedInterval !== 'custom') {
+                    select.value = 'custom';
+                    showCustomInput();
+                    document.getElementById('custom-interval').value = Math.floor(REFRESH_INTERVAL / 1000);
+                }
+            }
+        }
+
+        // 儲存設置到 localStorage
+        function saveSettings() {
+            localStorage.setItem('refreshInterval', REFRESH_INTERVAL.toString());
+        }
+
+        // 更新刷新間隔
+        function updateRefreshInterval() {
+            const select = document.getElementById('refresh-interval');
+            const value = select.value;
+
+            if (value === 'custom') {
+                showCustomInput();
+            } else {
+                hideCustomInput();
+                REFRESH_INTERVAL = parseInt(value);
+                saveSettings();
+                restartAutoRefresh();
+            }
+        }
+
+        // 顯示自訂輸入框
+        function showCustomInput() {
+            document.getElementById('custom-interval').style.display = 'inline-block';
+            document.getElementById('apply-custom').style.display = 'inline-block';
+        }
+
+        // 隱藏自訂輸入框
+        function hideCustomInput() {
+            document.getElementById('custom-interval').style.display = 'none';
+            document.getElementById('apply-custom').style.display = 'none';
+        }
+
+        // 套用自訂間隔
+        function applyCustomInterval() {
+            const customValue = document.getElementById('custom-interval').value;
+            if (customValue && customValue > 0 && customValue <= 3600) {
+                REFRESH_INTERVAL = parseInt(customValue) * 1000; // 轉換為毫秒
+                saveSettings();
+                restartAutoRefresh();
+                alert(`✅ 已設定刷新間隔為 ${customValue} 秒`);
+            } else {
+                alert('⚠️ 請輸入 1-3600 之間的秒數');
+            }
+        }
+
+        // 重新啟動自動刷新
+        function restartAutoRefresh() {
+            stopAutoRefresh();
+            startAutoRefresh();
+        }
+
+        // 格式化時間
+        function formatTime(date) {
+            return date.toLocaleString('zh-TW', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+
+        // 顯示錯誤訊息
+        function showError(message) {
+            const errorContainer = document.getElementById('error-container');
+            errorContainer.innerHTML = `
+                <div class="error-message">
+                    ⚠️ <strong>錯誤：</strong>${message}
+                </div>
+            `;
+        }
+
+        // 清除錯誤訊息
+        function clearError() {
+            document.getElementById('error-container').innerHTML = '';
+        }
+
+        // 格式化輸出結果（使用 markdown 風格）
+        function formatOutput(output) {
+            if (!output) return '';
+
+            // 處理轉義的換行符
+            output = output.replace(/\\n/g, '\n');
+
+            const lines = output.split('\n');
+            let formattedHtml = '';
+            let i = 0;
+
+            while (i < lines.length) {
+                const line = lines[i];
+
+                // 檢測標題區塊（===== 開頭）
+                if (line.match(/^=+\s*.+\s*=+$/)) {
+                    formattedHtml += `<div class="output-section-title">${escapeHtml(line)}</div>`;
+                    i++;
+                    continue;
+                }
+
+                // 檢測空白分隔線
+                if (line.match(/^=+$/)) {
+                    formattedHtml += '<hr class="output-separator">';
+                    i++;
+                    continue;
+                }
+
+                // 檢測表格（查找下一行是否為分隔線）
+                if (i + 1 < lines.length) {
+                    const nextLine = lines[i + 1];
+                    // PowerShell 表格特徵：當前行有內容，下一行全是 - 和空格
+                    if (line.trim() && nextLine.match(/^[-\s]+$/) && nextLine.includes('-')) {
+                        // 這是表格開始
+                        const tableResult = parseTable(lines, i);
+                        formattedHtml += tableResult.html;
+                        i = tableResult.nextIndex;
+                        continue;
+                    }
+                }
+
+                // 普通文本行
+                if (line.trim()) {
+                    // 檢查是否為鍵值對格式（如 "總記憶體: 15.85 GB"）
+                    if (line.includes(':') && !line.startsWith(' ')) {
+                        formattedHtml += `<div class="output-key-value">${escapeHtml(line)}</div>`;
+                    } else {
+                        formattedHtml += `<div class="output-line">${escapeHtml(line)}</div>`;
+                    }
+                } else {
+                    formattedHtml += '<div class="output-line">&nbsp;</div>';
+                }
+
+                i++;
+            }
+
+            return formattedHtml || `<pre class="output-fallback">${escapeHtml(output)}</pre>`;
+        }
+
+        // 解析表格
+        function parseTable(lines, startIndex) {
+            const headerLine = lines[startIndex];
+            const separatorLine = lines[startIndex + 1];
+
+            // 通過分隔線確定列的位置
+            const columnPositions = [];
+            let inDash = false;
+            let startPos = 0;
+
+            for (let i = 0; i < separatorLine.length; i++) {
+                if (separatorLine[i] === '-' && !inDash) {
+                    inDash = true;
+                    startPos = i;
+                } else if (separatorLine[i] !== '-' && inDash) {
+                    inDash = false;
+                    columnPositions.push({ start: startPos, end: i });
+                }
+            }
+
+            // 如果最後還在 dash 中
+            if (inDash) {
+                columnPositions.push({ start: startPos, end: separatorLine.length });
+            }
+
+            // 從表頭中提取列名
+            const headers = columnPositions.map(pos =>
+                headerLine.substring(pos.start, pos.end).trim()
+            );
+
+            let tableHtml = '<table class="output-table"><thead><tr>';
+            headers.forEach(header => {
+                tableHtml += `<th>${escapeHtml(header)}</th>`;
+            });
+            tableHtml += '</tr></thead><tbody>';
+
+            // 解析數據行
+            let i = startIndex + 2; // 跳過表頭和分隔線
+            while (i < lines.length) {
+                const dataLine = lines[i];
+
+                // 檢查是否為空行或表格結束
+                if (!dataLine.trim()) {
+                    break;
+                }
+
+                // 檢查是否還是表格內容（如果行太短或格式不對，表格結束）
+                if (dataLine.length < separatorLine.length * 0.5) {
+                    break;
+                }
+
+                // 提取單元格數據 - 使用更靈活的方法
+                const cells = columnPositions.map((pos, idx) => {
+                    // 對於每一列，從分隔線起始位置向前最多 10 個字符開始搜索
+                    const searchStart = Math.max(0, pos.start - 10);
+                    const nextColStart = idx < columnPositions.length - 1 ?
+                        columnPositions[idx + 1].start : dataLine.length;
+
+                    // 提取這個範圍內的文本
+                    const rawText = dataLine.substring(searchStart, nextColStart);
+
+                    // 分割成單詞（按空格）
+                    const words = rawText.trim().split(/\s+/).filter(w => w);
+
+                    // 對於第一列，可能包含多個單詞（如 "Memory Compression"）
+                    if (idx === 0) {
+                        // 找到最後一個看起來像數字的單詞的位置
+                        let lastWordIdx = words.length;
+                        for (let j = words.length - 1; j >= 0; j--) {
+                            if (/^\d+$/.test(words[j]) || /^\d+\.\d+$/.test(words[j])) {
+                                lastWordIdx = j;
+                                break;
+                            }
+                        }
+                        return words.slice(0, lastWordIdx).join(' ');
+                    }
+
+                    // 對於其他列，取最後一個單詞（最靠近該列位置的值）
+                    return words.length > 0 ? words[words.length - 1] : '';
+                });
+
+                // 如果所有單元格都為空，表格結束
+                if (cells.every(cell => !cell)) {
+                    break;
+                }
+
+                tableHtml += '<tr>';
+                cells.forEach(cell => {
+                    tableHtml += `<td>${escapeHtml(cell || '-')}</td>`;
+                });
+                tableHtml += '</tr>';
+
+                i++;
+            }
+
+            tableHtml += '</tbody></table>';
+
+            return {
+                html: tableHtml,
+                nextIndex: i
+            };
+        }
+
+        // 解析 Markdown 內容
+        function parseTestResults(markdown) {
+            const tests = [];
+            const sections = markdown.split(/={10,}/); // 分割不同時間的測試報告
+
+            sections.forEach(section => {
+                if (!section.trim()) return;
+
+                // 提取測試時間
+                const timeMatch = section.match(/測試時間:\s*(.+)/);
+                const testTime = timeMatch ? timeMatch[1] : '';
+
+                // 提取每個測試項目
+                const testMatches = section.matchAll(/### 測試 (\d+)([\s\S]*?)(?=### 測試 \d+|$)/g);
+
+                for (const match of testMatches) {
+                    const testNumber = match[1];
+                    const content = match[2];
+
+                    // 提取測試詳情（匹配 Markdown 粗體標記 **）
+                    const execTime = content.match(/\*\*執行時間\*\*:\s*(.+)/)?.[1] || '';
+                    const command = content.match(/\*\*執行命令\*\*:\s*`(.+)`/)?.[1] || '';
+                    const platform = content.match(/\*\*指定平台\*\*:\s*(.+)/)?.[1] || '';
+                    const status = content.match(/\*\*狀態\*\*:\s*(.+)/)?.[1] || '';
+                    const actualPlatform = content.match(/\*\*實際平台\*\*:\s*(.+)/)?.[1] || '';
+                    const returnCode = content.match(/\*\*返回碼\*\*:\s*(\d+)/)?.[1] || '';
+
+                    // 提取輸出結果（處理 ``` 後的換行）
+                    const outputMatch = content.match(/\*\*輸出結果\*\*:\s*```\n?([\s\S]*?)```/);
+                    const output = outputMatch ? outputMatch[1].trim() : '';
+
+                    // 判斷是否成功
+                    const isSuccess = status.includes('✅') || status.includes('成功');
+
+                    tests.push({
+                        number: testNumber,
+                        time: testTime,
+                        execTime,
+                        command,
+                        platform,
+                        status: isSuccess ? 'success' : 'failure',
+                        actualPlatform,
+                        returnCode,
+                        output,
+                        expanded: false
+                    });
+                }
+            });
+
+            return tests.reverse(); // 最新的在前面
+        }
+
+        // 更新摘要卡片
+        function updateSummaryCards(tests) {
+            const total = tests.length;
+            const success = tests.filter(t => t.status === 'success').length;
+            const failure = total - success;
+            const rate = total > 0 ? Math.round((success / total) * 100) : 0;
+
+            document.getElementById('total-tests').textContent = total;
+            document.getElementById('success-tests').textContent = success;
+            document.getElementById('failure-tests').textContent = failure;
+            document.getElementById('success-rate').textContent = rate + '%';
+        }
+
+        // 渲染單個測試項目
+        function renderTestItem(test, index) {
+            const statusIcon = test.status === 'success' ? '✅' : '❌';
+            const statusText = test.status === 'success' ? '成功' : '失敗';
+            const statusClass = test.status === 'success' ? 'success' : 'failure';
+
+            // 格式化輸出
+            const formattedOutput = formatOutput(test.output);
+
+            return `
+                <div class="test-card ${statusClass}" data-status="${test.status}" data-index="${index}">
+                    <div class="test-card-header" onclick="toggleTest(${index})">
+                        <div class="test-card-title">
+                            <span class="test-number">測試 ${test.number}</span>
+                            <span class="status-badge ${statusClass}">${statusIcon} ${statusText}</span>
+                        </div>
+                        <div class="test-card-meta">
+                            <span class="meta-item">⏰ ${test.execTime}</span>
+                            <span class="meta-item">💻 ${test.actualPlatform}</span>
+                            <span class="meta-item">↩️ 返回碼: ${test.returnCode}</span>
+                        </div>
+                        <div class="expand-icon ${test.expanded ? 'expanded' : ''}">▼</div>
+                    </div>
+
+                    <div class="test-card-body ${test.expanded ? 'expanded' : ''}">
+                        <div class="test-detail-grid">
+                            <div class="detail-item">
+                                <div class="detail-label">🔧 執行命令</div>
+                                <div class="detail-value command">${escapeHtml(test.command)}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">🎯 指定平台</div>
+                                <div class="detail-value">${test.platform}</div>
+                            </div>
+                        </div>
+
+                        ${test.output ? `
+                            <div class="output-section">
+                                <div class="output-header">📤 輸出結果</div>
+                                <div class="output-content formatted">${formattedOutput}</div>
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        // HTML 轉義
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 渲染所有測試項目
+        function renderAllTests() {
+            const timeline = document.getElementById('test-timeline');
+
+            if (testResults.length === 0) {
+                timeline.innerHTML = '<div class="empty-message">📭 尚無測試結果</div>';
+                return;
+            }
+
+            const html = testResults.map((test, index) => renderTestItem(test, index)).join('');
+            timeline.innerHTML = html;
+
+            // 應用當前過濾器
+            applyFilter();
+        }
+
+        // 切換單個測試項目的展開/收起
+        function toggleTest(index) {
+            testResults[index].expanded = !testResults[index].expanded;
+            renderAllTests();
+        }
+
+        // 切換所有測試項目的展開/收起
+        function toggleAllTests() {
+            allExpanded = !allExpanded;
+            testResults.forEach(test => test.expanded = allExpanded);
+            document.getElementById('toggle-text').textContent = allExpanded ? '📕 收起全部' : '📖 展開全部';
+            renderAllTests();
+        }
+
+        // 過濾測試結果
+        function filterTests(filter) {
+            currentFilter = filter;
+
+            // 更新按鈕狀態
+            document.querySelectorAll('.controls .btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.getElementById(`filter-${filter}`).classList.add('active');
+
+            applyFilter();
+        }
+
+        // 應用過濾器
+        function applyFilter() {
+            const cards = document.querySelectorAll('.test-card');
+            cards.forEach(card => {
+                const status = card.getAttribute('data-status');
+                if (currentFilter === 'all' || currentFilter === status) {
+                    card.style.display = 'block';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+        }
+
+        // 獲取並顯示測試結果
+        async function fetchTestResults() {
+            const loadingIndicator = document.getElementById('loading-indicator');
+
+            try {
+                loadingIndicator.style.display = 'inline-block';
+
+                // 獲取原始 Markdown 內容
+                const response = await fetch('/api/test-results/raw');
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                // API 返回的是 JSON 字符串，需要先解析
+                const text = await response.text();
+                const markdown = JSON.parse(text);
+
+                // 解析測試結果
+                testResults = parseTestResults(markdown);
+
+                // 更新摘要
+                updateSummaryCards(testResults);
+
+                // 渲染測試項目
+                renderAllTests();
+
+                // 更新最後更新時間
+                document.getElementById('last-update').textContent =
+                    `最後更新：${formatTime(new Date())}`;
+
+                clearError();
+
+            } catch (error) {
+                console.error('獲取測試結果失敗:', error);
+                showError(`無法載入測試結果：${error.message}`);
+                document.getElementById('test-timeline').innerHTML =
+                    '<div class="error-message">⚠️ 無法載入測試結果</div>';
+            } finally {
+                loadingIndicator.style.display = 'none';
+            }
+        }
+
+        // 啟動自動刷新
+        function startAutoRefresh() {
+            // 立即執行一次
+            fetchTestResults();
+
+            // 設定定時刷新
+            refreshInterval = setInterval(fetchTestResults, REFRESH_INTERVAL);
+        }
+
+        // 停止自動刷新
+        function stopAutoRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        }
+
+        // 頁面載入完成後啟動自動刷新
+        document.addEventListener('DOMContentLoaded', () => {
+            loadSettings(); // 載入設置
+            startAutoRefresh();
+            // 預設選中 "全部" 過濾器
+            document.getElementById('filter-all').classList.add('active');
+        });
+
+        // 頁面卸載時停止刷新
+        window.addEventListener('beforeunload', () => {
+            stopAutoRefresh();
+        });
+
+        // 頁面可見性變化時控制刷新
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                stopAutoRefresh();
+            } else {
+                startAutoRefresh();
+            }
+        });
+    </script>
+</body>
+</html>
